@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/vector_store/
+.ipynb_checkpoints/
+.pytest_cache/
+.chroma/

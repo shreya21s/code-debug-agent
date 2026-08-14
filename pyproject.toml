@@ -1,0 +1,29 @@
+[project]
+name = "code-debug-ai-agent"
+version = "0.1.0"
+description = "Multi-agent code debug system: Supervisor → Coding (MCP) → Testing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "langgraph>=0.4.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "langchain-mcp-adapters>=0.3.0",
+    "mcp>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+code-debug-agent = "code_debug_agent.main:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/code_debug_agent"]
+
+[tool.pyright]
+extraPaths = ["demo_workspace", "ai-software-engineering-team"]
+
