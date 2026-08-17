@@ -22,11 +22,9 @@ Developers lose significant time in manual iteration loops: reading code, identi
 7. **Synthesis**: Once all tasks are approved and verified, the loop terminates and the final execution report is generated.
 
 ### High-Level Architecture
-The workspace contains two implementations that showcase a progression from a prototype to a mature multi-agent service team:
-1. **`src/code_debug_agent` (Basic Agent)**: A simple OpenAI-based supervisor-coder-tester LangGraph loop executing external `fastmcp` stdio servers.
-2. **`ai-software-engineering-team/` (Advanced Team)**: A stateful, modular Gemini-based system containing 5 agents, repository RAG, custom portable Vector Store, native MCP integration, and HTTP-based Agent-to-Agent (A2A) remote microservice delegation.
+The workspace contains a single stateful, modular, Gemini-based multi-agent system structured inside `app/` containing 5 agents, repository RAG, custom portable Vector Store, native MCP integration, and HTTP-based Agent-to-Agent (A2A) remote microservice delegation.
 
-#### System Architecture Diagram (`ai-software-engineering-team`)
+#### System Architecture Diagram
 ```mermaid
 graph TD
     User([User Request]) --> Supervisor[Supervisor Agent]
@@ -90,49 +88,44 @@ graph TD
 
 ## 3. Module Overview
 
-### `ai-software-engineering-team/` (Core Multi-Agent Service)
+### `app/` (Core Multi-Agent Service)
 
-*   [`app/state.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/state.py)
+*   [`app/state.py`](file:///d:/code-debug-ai-agent/app/state.py)
     *   *Purpose*: Defines `AgentState` schema and initialization helper.
     *   *Responsibility*: Houses planning checklist, completed tasks, outputs (research, code changes, test results, review), errors accumulator list, and routing indicators.
-*   [`app/graph/workflow.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/graph/workflow.py)
+*   [`app/graph/workflow.py`](file:///d:/code-debug-ai-agent/app/graph/workflow.py)
     *   *Purpose*: Configures the LangGraph orchestration flow.
     *   *Responsibility*: Registers node functions (agents) and defines conditional edges returning to the supervisor.
-*   [`app/graph/routing.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/graph/routing.py)
+*   [`app/graph/routing.py`](file:///d:/code-debug-ai-agent/app/graph/routing.py)
     *   *Purpose*: Contains conditional execution path routers.
     *   *Responsibility*: Directs to subagents based on state variables and halts infinite loops using a hard `MAX_ITERATIONS` budget check.
-*   [`app/agents/supervisor.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/agents/supervisor.py)
+*   [`app/agents/supervisor.py`](file:///d:/code-debug-ai-agent/app/agents/supervisor.py)
     *   *Purpose*: Central coordinator agent.
     *   *Responsibility*: Evaluates the current execution status and uses structured JSON output to update the task checklist and set the next subagent.
-*   [`app/agents/research_agent.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/agents/research_agent.py)
+*   [`app/agents/research_agent.py`](file:///d:/code-debug-ai-agent/app/agents/research_agent.py)
     *   *Purpose*: Codebase scanner and bug locator.
     *   *Responsibility*: Queries the vector database using RAG, maps file structure, and suggests high-level implementation fixes.
-*   [`app/agents/coding_agent.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/agents/coding_agent.py)
+*   [`app/agents/coding_agent.py`](file:///d:/code-debug-ai-agent/app/agents/coding_agent.py)
     *   *Purpose*: File editor.
     *   *Responsibility*: Generates full file replacement code and writes changes safely to the filesystem using MCP tool commands.
-*   [`app/agents/testing_agent.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/agents/testing_agent.py)
+*   [`app/agents/testing_agent.py`](file:///d:/code-debug-ai-agent/app/agents/testing_agent.py)
     *   *Purpose*: Code validation.
     *   *Responsibility*: Triggers pytest through the MCP server or falls back to direct local subprocess execution if MCP is offline.
-*   [`app/agents/reviewer_agent.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/agents/reviewer_agent.py)
+*   [`app/agents/reviewer_agent.py`](file:///d:/code-debug-ai-agent/app/agents/reviewer_agent.py)
     *   *Purpose*: Quality gatekeeper.
     *   *Responsibility*: Audits code changes and test outputs to emit a boolean approval result.
-*   [`app/mcp/tools.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/mcp/tools.py)
+*   [`app/mcp/tools.py`](file:///d:/code-debug-ai-agent/app/mcp/tools.py)
     *   *Purpose*: Backend execution engine.
     *   *Responsibility*: Implements path traversal validation and parses pytest options safely without shell shell execution limits.
-*   [`app/a2a/server.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/a2a/server.py) / [`app/a2a/client.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/a2a/client.py)
+*   [`app/a2a/server.py`](file:///d:/code-debug-ai-agent/app/a2a/server.py) / [`app/a2a/client.py`](file:///d:/code-debug-ai-agent/app/a2a/client.py)
     *   *Purpose*: Agent-to-Agent remote execution.
     *   *Responsibility*: Exposes research and reviewer endpoints via FastAPI, checks capability schemas, and executes nodes over HTTP.
-*   [`app/rag/vector_store.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/rag/vector_store.py)
+*   [`app/rag/vector_store.py`](file:///d:/code-debug-ai-agent/app/rag/vector_store.py)
     *   *Purpose*: Vector search and storage.
     *   *Responsibility*: Indexes repository files and serves similarity search queries. Wraps the pure-python custom fallback.
-*   [`app/utils/logging.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/utils/logging.py)
+*   [`app/utils/logging.py`](file:///d:/code-debug-ai-agent/app/utils/logging.py)
     *   *Purpose*: Central execution tracer.
     *   *Responsibility*: Formats elapsed timings and tool outputs into a markdown execution summary.
-
-### `src/code_debug_agent/` (Prototype OpenAI Codebase)
-*   [`graph.py`](file:///d:/code-debug-ai-agent/src/code_debug_agent/graph.py): Basic StateGraph routing loop.
-*   [`mcp_client.py`](file:///d:/code-debug-ai-agent/src/code_debug_agent/mcp_client.py): Configures `MultiServerMCPClient` to launch separate Python command servers.
-*   [`mcp_servers/`](file:///d:/code-debug-ai-agent/mcp_servers/): Independent servers (`coding_server.py` and `testing_server.py`) exposing basic filesystem and command tools.
 
 ---
 
@@ -192,13 +185,13 @@ graph TD
 
 ### D. Failure / Edge-Case Questions
 *   **What happens if the model gets stuck in an infinite loop correcting the same test failure?**
-    *   *Answer*: In [`routing.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/graph/routing.py), we check `state.iteration_count` against `MAX_ITERATIONS = 10`. If the loop exceeds 10 iterations, routing bypasses all agents and goes directly to the `final_response` node to terminate, returning the execution steps to the user without wasting tokens.
+    *   *Answer*: In [`routing.py`](file:///d:/code-debug-ai-agent/app/graph/routing.py), we check `state.iteration_count` against `MAX_ITERATIONS = 10`. If the loop exceeds 10 iterations, routing bypasses all agents and goes directly to the `final_response` node to terminate, returning the execution steps to the user without wasting tokens.
 *   **What happens if there are no tests in the target workspace?**
-    *   *Answer*: In [`testing_agent.py`](file:///d:/code-debug-ai-agent/ai-software-engineering-team/app/agents/testing_agent.py#L141-L144), if the pytest execution output reveals that no tests were collected, the agent automatically marks the outcome as `success = True` and sets the summary to *"No tests found in repository (Auto-passed validation)"*. This prevents the system from getting blocked when debugging workspaces without test suites.
+    *   *Answer*: In [`testing_agent.py`](file:///d:/code-debug-ai-agent/app/agents/testing_agent.py#L141-L144), if the pytest execution output reveals that no tests were collected, the agent automatically marks the outcome as `success = True` and sets the summary to *"No tests found in repository (Auto-passed validation)"*. This prevents the system from getting blocked when debugging workspaces without test suites.
 
 ### E. Tricky / Twist Questions
 *   **Is this system actually production-secure? If I point this agent to a repository, can it run malicious code?**
-    *   *Answer*: The `ai-software-engineering-team/` codebase has security controls like path traversal checks and parameter validation. However, **it is not production-secure against arbitrary code execution**. Pytest itself executes python code at import time (like `conftest.py` files). If a malicious user supplies a repository containing a backdoor inside `conftest.py`, running the test runner executes that backdoor directly on the host machine. In production, the test execution must be isolated in a Docker container or gVisor sandbox.
+    *   *Answer*: The `app/` codebase has security controls like path traversal checks and parameter validation. However, **it is not production-secure against arbitrary code execution**. Pytest itself executes python code at import time (like `conftest.py` files). If a malicious user supplies a repository containing a backdoor inside `conftest.py`, running the test runner executes that backdoor directly on the host machine. In production, the test execution must be isolated in a Docker container or gVisor sandbox.
 *   **Why did you use full file replacements in `coding_agent.py` instead of generating diff patches (like Unified Diffs or line-by-line insertions)?**
     *   *Answer*: Writing whole files avoids formatting and line matching errors common with LLMs. However, it's a trade-off: for large files, writing the entire content back consumes excessive tokens and risk truncating the file if the model hits token limits. A better approach for production would be block-based editing or unified patch generation.
 *   **How does the system prevent the Supervisor from repeating the same failed plan over and over?**
@@ -292,7 +285,7 @@ graph TD
 1.  **Claiming the system is secure**: Pytest execution on the host machine is insecure. Confidently acknowledge this and explain how sandboxing fixes it.
 2.  **Claiming SQLite is used on Windows**: Explain that you bypass SQLite/Chroma conflicts on Windows using the `SimpleVectorStore` fallback.
 3.  **Claiming LangGraph uses native parallel execution**: Explain that the graph runs nodes sequentially, returning to the Supervisor at each step.
-4.  **Confusing the two codebases**: Clearly distinguish the simple OpenAI demo (`src/code_debug_agent`) from the advanced Gemini team (`ai-software-engineering-team/`).
+4.  **Confusing the agent codebase with the target workspace**: Emphasize that the agent runs on its own codebase (inside `app/`), while the code modification tools target a separate directory specified by `WORKSPACE_ROOT` (such as `demo_workspace` or `examples/sample_project`).
 5.  **Saying the agent generates diffs**: Explain that the Coding agent currently does full file overwrites via the `write_file` MCP tool.
 
 ---
