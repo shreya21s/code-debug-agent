@@ -1,0 +1,196 @@
+# Technical Interview Guide: Code Debug AI Agent & Team
+
+This document outlines the architecture, execution pipeline, tech stack rationale, security design, weak points, and scaling bottlenecks of the stateful multi-agent AI software engineering team.
+
+---
+
+## 1. Project Summary & Core Problem
+
+*   **What the Project Does**: The project is a stateful multi-agent AI system designed to automatically analyze, debug, modify, and review codebase repositories. It orchestrates specialized subagents to locate buggy code using semantic search (RAG), apply bug fixes over standard Model Context Protocol (MCP) file tools, execute test suites securely, and review diffs for regressions.
+*   **Core Problem**: Manual iteration loops (code-edit-test-fail-retry) cost significant developer time. Standard LLM wrappers fail at scale because they lack state memory, struggle with repository context limits, cannot execute system files/test suites, and cannot safely review their own work in isolated sandboxes.
+*   **Solution**: A cyclical state machine built on LangGraph that delegates specialized roles (Researcher, Coder, Tester, Reviewer) and feeds execution outcomes (test failures, code diffs, review feedback) back into a Supervisor agent for correction loops.
+
+---
+
+## 2. High-Level Architecture & LangGraph Flow
+
+The system is built on **LangGraph** to model a cyclic state machine. The state is maintained in a centralized `AgentState` object, which orchestrates the flow through a coordinator (**Supervisor Agent**) and specialized subagents (**Research**, **Coding**, **Testing**, and **Reviewer**).
+
+```
+                  +-------------------+
+                  |      START        |
+                  +---------+---------+
+                            |
+                            v
+                  +---------+---------+
++---------------->+  supervisor_agent |<-------------------------+
+|                 +---------+---------+                          |
+|                           |                                    |
+|             route_next_node (Conditional Edge)                 |
+|                           |                                    |
+|         +-----------------+-----------------+                  |
+|         |                 |                 |                  |
+|         v                 v                 v                  |
+|  +------+------+   +------+------+   +------+------+           |
+|  |research_agent|  | coding_agent|   |testing_agent|           |
+|  +------+------+   +------+------+   +------+------+           |
+|         |                 |                 |                  |
+|         |                 v                 |                  |
+|         |          +------+------+          |                  |
+|         |          |reviewer_agent|         |                  |
+|         |          +------+------+          |                  |
+|         |                 |                 |                  |
++---------+-----------------+-----------------+------------------+
+                            |
+                            v
+                  +---------+---------+
+                  |  final_response   |
+                  +---------+---------+
+                            |
+                            v
+                  +---------+---------+
+                  |       END         |
+                  +-------------------+
+```
+
+### 2.1 Agent Components & Fundamental Technologies Used
+
+*   **`supervisor_agent`**:
+    *   *Fundamental Role*: Planner and workflow router. Evaluates current execution state, builds the task checklist, and delegates execution paths.
+    *   *Fundamental Technologies*: **LangGraph** (StateGraph cyclic transitions), **LangChain** (`ChatPromptTemplate`), and **Google Gemini** structured output schemas (`with_structured_output` using Pydantic models).
+*   **`research_agent`**:
+    *   *Fundamental Role*: Repository codebase explorer. Identifies bug locations and designs implementation adjustments.
+    *   *Fundamental Technologies*: **Retrieval-Augmented Generation (RAG)**, **FastAPI** (remote Agent-to-Agent/A2A HTTP messaging endpoints), and **ChromaDB / SimpleVectorStore** (NumPy-based manually-calculated cosine similarity fallbacks).
+*   **`coding_agent`**:
+    *   *Fundamental Role*: Code manipulator. Writes programmatic edits to files inside the codebase.
+    *   *Fundamental Technologies*: **Model Context Protocol (MCP)** filesystem read/write endpoints, and **pathlib** absolute path normalization (`.resolve()`, `.is_relative_to()`) to guarantee directory sandbox containment.
+*   **`testing_agent`**:
+    *   *Fundamental Role*: Code validator. Runs automated verification test suites and reports stdout/stderr.
+    *   *Fundamental Technologies*: **Pytest**, MCP test tools execution client, **subprocess** isolation runner (shlex command list parsing + 30s timeout checks), and Python's native **AST (Abstract Syntax Tree)** parsing library for fallback syntax checking.
+*   **`reviewer_agent`**:
+    *   *Fundamental Role*: Quality control auditor. Inspects code changes and test runs, returning a final pass/fail approval.
+    *   *Fundamental Technologies*: **Google Gemini** reasoning prompts, and **FastAPI** A2A microservice protocols.
+*   **`final_response`**:
+    *   *Fundamental Role*: Terminating workflow reporter that details outcomes and loops summary.
+    *   *Fundamental Technologies*: Python formatting models.
+
+---
+
+## 3. Shared State (`AgentState`)
+
+The central memory of the system is stored in [app/state.py](file:///d:/code-debug-ai-agent/app/state.py). It tracks:
+*   `task_input`: The original goal provided by the user.
+*   `checklist`: A dynamic task plan generated and updated by the Supervisor.
+*   `completed_tasks`: A list of finished milestones.
+*   `research_results`: Explanations and root-cause files detected.
+*   `code_changes`: Record of modified files and diff patches.
+*   `test_results`: The pytest console output and status code.
+*   `review_feedback`: Review notes, approval flags, and feedback.
+*   `errors`: Accumulated debugging errors and test failures.
+*   `next_agent`: The next destination node targeted by the supervisor.
+*   `iteration_count`: The current count of nodes visited (to prevent infinite loops).
+
+---
+
+## 4. Step-by-Step Execution Sequence
+
+Below is the step-by-step lifecycle of a single user request:
+
+### Step 1: Initialization
+*   The application starts inside [main.py](file:///d:/code-debug-ai-agent/main.py).
+*   It receives the user goal and the target repository directories.
+*   It compiles the LangGraph workflow and invokes it with the initial `AgentState`.
+
+### Step 2: Supervisor Planning & Strategy (`supervisor_agent`)
+*   The system begins at the `supervisor_agent` node.
+*   The supervisor analyzes the user request, checks the current state fields (`errors`, `test_results`, etc.), and dynamically updates the planning `checklist`.
+*   It outputs a structured JSON response identifying the next agent to target: `"research"`, `"coding"`, `"testing"`, `"reviewer"`, or `"complete"`.
+
+### Step 3: Codebase Search & Analysis (`research_agent`)
+*   The router detects `"research"` and routes to the `research_agent`.
+*   **Agent-to-Agent (A2A) Check**: The node attempts to connect to the remote Research microservice at `http://localhost:8001`. If online, it sends the state over HTTP to perform the search. If offline, it executes locally.
+*   **Semantic RAG Search**: The agent queries the repository index. It calculates cosine similarity using the Vector Store to find relevant code chunks.
+*   **Result**: It returns the identified files, explanation of the bug, and a proposed fix description.
+
+### Step 4: Modifying the Codebase (`coding_agent`)
+*   The supervisor directs the flow to `coding_agent`.
+*   The coding agent reads the research findings and determines which files to modify.
+*   **Human-in-the-Loop (HITL) Check**: Before changes are written to disk, the proposed edits and a diff are printed in the console. The system pauses to request user approval. If approved, it writes to disk. If rejected, the user's feedback comments are stored in the state's `errors` list, and execution is routed back to the supervisor to try a different fix.
+*   **File Writing via MCP**: Upon approval, the agent executes file modification commands. Files are written using the standard Model Context Protocol (MCP) file tools.
+*   **Path Validation**: The filesystem tool verifies that the target path resolves within the allowed `WORKSPACE_ROOT` to prevent path traversal outside the project.
+*   **Result**: Writes the approved files, records the diff patch into the state, and returns to the supervisor.
+
+### Step 5: Executing the Test Suite (`testing_agent`)
+*   The supervisor routes to the `testing_agent`.
+*   **Testing via MCP**: The testing agent sends a `run_tests` command to the MCP tool client.
+*   **Subprocess Fallback**: If the MCP client is unreachable, it directly spawns a local `pytest` subprocess command against the codebase with a `30 seconds` safety timeout.
+*   **Syntax Checking Fallback**: If no pytest test suite exists in the target repository, it parses the modified files using Python's AST compiler to verify syntax soundness.
+*   **Result**: Populates the state's `test_results` field with the outcome (pass/fail) and raw console output logs.
+
+### Step 6: Quality Gate Audit (`reviewer_agent`)
+*   The supervisor directs the graph to the `reviewer_agent`.
+*   **A2A Check**: Checks for a remote Reviewer microservice at `http://localhost:8002` over HTTP; falls back to local execution if down.
+*   **Review Assessment**: It audits the code modifications (diffs) against the test outputs.
+*   **Result**: Sets the `approved` status (True/False) and writes feedback notes.
+
+### Step 7: Cyclic Iteration or Completion
+*   The graph returns to the supervisor.
+*   **If Approved**: The supervisor updates `next_agent` to `complete`, routing the execution to the `final_response` node to synthesize a success report.
+*   **If Rejected**: The supervisor appends the review comments and test failures to the `errors` accumulator list, updates the checklist, and routes back to the `coding_agent` to try again.
+*   **Infinite Loop Guard**: The conditional routing logic in [app/graph/routing.py](file:///d:/code-debug-ai-agent/app/graph/routing.py) tracks `iteration_count`. If iterations equal or exceed `MAX_ITERATIONS = 10`, it overrides the supervisor's choice, routing directly to `final_response` to report a failure and terminate the loop.
+
+---
+
+## 5. Technical Deep Dives
+
+### 5.1 Agent-to-Agent (A2A) Remote Service Protocol
+*   **Concept**: Decouples heavy subtask execution (like indexing, search, or review) from the core coordinator graph, exposing agents as standalone web services.
+*   **Mechanism**: The `research_agent` and `reviewer_agent` can run as FastAPI microservices listening on ports `8001` and `8002` respectively.
+*   **Execution Logic**: When the graph executes the local agent nodes, it queries the service endpoint `GET /capabilities`. If responsive, the state is serialized into an HTTP POST request and execution is delegated. If the endpoints are unreachable, it prints a fallback debug warning and routes processing locally.
+
+### 5.2 SimpleVectorStore: Portable Pure-Python Fallback
+*   **Concept**: A fallback database designed to bypass compiled Chroma DB SQLite locking crashes on Windows environments.
+*   **Mechanism**: Implements vector similarity search entirely in pure Python using NumPy:
+    $$\text{Similarity} = \frac{\mathbf{q} \cdot \mathbf{i}}{\|\mathbf{q}\| \|\mathbf{i}\|}$$
+*   **Serialization**: Uses Python's `pickle` library to write and read the indexed vectors.
+*   **Offline Mode**: In the absence of a `GOOGLE_API_KEY`, it seeds MD5 hashes of text blocks into a pseudo-random generator to yield deterministic `768`-dimensional mock vectors, allowing complete test execution coverage with zero API cost.
+
+### 5.3 Secure Model Context Protocol Filesystem/Test Boundary
+*   **Path Traversal Prevention**: The MCP file read/write tools strictly validate target paths. They resolve the target directory and verify context boundary constraints:
+    ```python
+    resolved_target = Path(path).resolve()
+    if not resolved_target.is_relative_to(resolved_root.resolve()):
+        raise ValueError("Path traversal detected!")
+    ```
+*   **Command Injection Blocking**: Subprocess execution blocks raw shell command execution parameters (no `shell=True` runs). Commands are tokenized via `shlex.split`, prefixes are checked, and arguments are validated before execution.
+
+### 5.4 Human-in-the-Loop (HITL) Guardrail
+*   **Concept**: Adds a manual verification checkpoint for code modification actions, ensuring that no autonomous changes are applied directly to the filesystem without review.
+*   **Mechanism**: Implemented directly in [`app/agents/coding_agent.py`](file:///d:/code-debug-ai-agent/app/agents/coding_agent.py). Prior to calling the MCP file tools, the agent compares proposed modifications against current files using `difflib.unified_diff`, prints the diff block to the console, and prompts the operator via standard terminal input.
+*   **Test & Automation Bypass**: The node inspects the environment for `"PYTEST_CURRENT_TEST"` to disable prompt interactions during automated CI/CD and pytest test runs, preventing environment hangs.
+*   **Correction Routing**: If rejected by the operator, their typed critique is stored in `AgentState.errors` and routed back to the supervisor to adjust the coding plan.
+
+---
+
+## 6. Weak Points & Security Vulnerabilities
+
+*   **Insecure Test Host Environment**: Running pytest executes tests directly in the host process environment. If a target repository contains malicious configuration scripts (e.g. within a `conftest.py` file), importing or running pytest will execute that code directly on the host machine.
+*   **Full File Replacement Limitations**: The Coding agent performs full file rewrites via `write_file` rather than targeted unified diff patches. For massive files, this consumes significant tokens and risks file truncation if the output exceeds the LLM context limits.
+*   **Pickle Deserialization Vulnerability**: The `SimpleVectorStore` fallback serializes vectors using standard Python `pickle`. If an attacker replaces the database pickle files, it can trigger arbitrary command execution upon loading.
+
+---
+
+## 7. Scaling Bottlenecks & Production Enhancements
+
+*   **Current Bottlenecks**:
+    *   *SQLite Lockups*: Sequential locks and concurrency collisions on SQLite files.
+    *   *NumPy Memory Footprint*: Brute-force cosine calculation requires keeping all vectors in active memory, causing performance degradation for codebases containing thousands of chunks.
+    *   *Workspace Collisions*: Hardcoded `WORKSPACE_ROOT` prevents executing concurrent multi-tenant fixes.
+*   **Scaling Thresholds**:
+    *   *10 Users*: Runs sequentially. No performance issues besides LLM API latencies.
+    *   *1,000 Users*: Triggers model API rate-limit errors and causes local workspace file-write collisions.
+    *   *100,000 Users*: Massive system crashes due to memory depletion from active NumPy arrays and workspace storage constraints.
+*   **Production Enhancements**:
+    1.  *Containerized Sandboxes*: Isolate all file writes and pytest execution blocks in temporary, isolated Docker containers or Firecracker microVMs.
+    2.  *Task Queues*: Decouple graph execution using Celery or Temporal.
+    3.  *Production Database*: Swap NumPy-based fallbacks for specialized HNSW databases like Milvus, pgvector, or Qdrant.

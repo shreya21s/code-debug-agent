@@ -3,6 +3,18 @@ from app.state import create_initial_state, AgentState
 from app.graph.routing import route_next_node, MAX_ITERATIONS
 from app.graph.workflow import create_graph
 
+def test_resolve_run_config_accepts_buggy_file(tmp_path):
+    from main import resolve_run_config
+
+    buggy = tmp_path / "buggy.py"
+    buggy.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+
+    request, repo, target = resolve_run_config([str(buggy)])
+    assert target == "buggy.py"
+    assert repo == str(buggy.parent)
+    assert "buggy.py" in request
+
+
 def test_initial_state():
     """Test initial state creation helper."""
     state = create_initial_state("Verify logins", "/path/to/repo")
@@ -41,11 +53,28 @@ def test_routing_loop_prevention():
     state["next_agent"] = "research"  # Should be ignored due to loop prevention
     assert route_next_node(state) == "final_response"
 
-def test_full_graph_execution():
+def test_full_graph_execution(tmp_path):
     """Runs the compiled graph locally in mock mode and verifies it reaches final_response."""
+    repo = tmp_path / "sandbox"
+    repo.mkdir()
+    (repo / "calculator.py").write_text(
+        "def add(a, b):\n    return a + b\n\ndef multiply(a, b):\n    return a + b\n",
+        encoding="utf-8",
+    )
+    (repo / "test_calculator.py").write_text(
+        "from calculator import add, multiply\n"
+        "def test_add():\n    assert add(2, 3) == 5\n"
+        "def test_multiply():\n    assert multiply(3, 4) == 12\n",
+        encoding="utf-8",
+    )
+
     graph = create_graph()
-    initial_state = create_initial_state("Verify login fails", "/path/to/repo")
-    
+    initial_state = create_initial_state(
+        "Fix the multiply bug in calculator.py and verify tests pass",
+        str(repo),
+        target_file="calculator.py",
+    )
+
     result = graph.invoke(initial_state)
     
     # Check that it executed through all agents and finished
@@ -63,4 +92,4 @@ def test_full_graph_execution():
     assert "Approved" in result["review_results"]
     
     # Check messages accumulated
-    assert len(result["messages"]) == 5 # 4 subagents + 1 final response message
+    assert len(result["messages"]) == 5  # 4 subagent executions + 1 final response message

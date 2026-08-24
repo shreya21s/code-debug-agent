@@ -5,9 +5,21 @@ import subprocess
 from pathlib import Path
 from typing import List, Dict, Any
 
-from app.config import WORKSPACE_ROOT
+from app.config import PROJECT_ROOT, WORKSPACE_ROOT
 
 logger = logging.getLogger(__name__)
+
+
+def get_workspace_root() -> Path:
+    """Resolve the active workspace, preferring the current environment value."""
+    workspace_env = os.getenv("WORKSPACE_ROOT")
+    if workspace_env:
+        env_path = Path(workspace_env)
+        return env_path.resolve() if env_path.is_absolute() else (PROJECT_ROOT / env_path).resolve()
+    if WORKSPACE_ROOT:
+        return Path(WORKSPACE_ROOT).resolve()
+    return Path.cwd().resolve()
+
 
 def validate_safe_path(path: str, workspace_root: Path | None = None) -> Path:
     """
@@ -15,7 +27,7 @@ def validate_safe_path(path: str, workspace_root: Path | None = None) -> Path:
     Raises ValueError if path is out of bounds or traversal is attempted.
     """
     if workspace_root is None:
-        workspace_root = WORKSPACE_ROOT
+        workspace_root = get_workspace_root()
         
     resolved_root = workspace_root.resolve()
     target_path = Path(path)
@@ -52,7 +64,7 @@ def list_files(subdir: str = "") -> List[str]:
                 if file.startswith("."):
                     continue
                 full_path = Path(root) / file
-                rel_path = full_path.relative_to(WORKSPACE_ROOT).as_posix()
+                rel_path = full_path.relative_to(get_workspace_root()).as_posix()
                 file_paths.append(rel_path)
                 
         return file_paths
@@ -100,7 +112,7 @@ def search_files(query: str) -> List[Dict[str, Any]]:
         results = []
         ignored_dirs = {".git", "__pycache__", ".venv", "venv", ".pytest_cache", ".chroma"}
         
-        for root, dirs, files in os.walk(WORKSPACE_ROOT):
+        for root, dirs, files in os.walk(get_workspace_root()):
             dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
             
             for file in files:
@@ -114,7 +126,7 @@ def search_files(query: str) -> List[Dict[str, Any]]:
                         lines = f.readlines()
                     for line_idx, line in enumerate(lines):
                         if query.lower() in line.lower():
-                            rel_path = full_path.relative_to(WORKSPACE_ROOT).as_posix()
+                            rel_path = full_path.relative_to(get_workspace_root()).as_posix()
                             results.append({
                                 "file_path": rel_path,
                                 "line_number": line_idx + 1,
@@ -167,7 +179,7 @@ def run_tests(command_arg: str = "") -> Dict[str, Any]:
         logger.info(f"Executing approved test command via MCP: {' '.join(cmd)}")
         res = subprocess.run(
             cmd,
-            cwd=str(WORKSPACE_ROOT),
+            cwd=str(get_workspace_root()),
             capture_output=True,
             text=True,
             timeout=30

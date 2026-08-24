@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class A2ATaskRequest(BaseModel):
     task_id: str
     agent_type: str = Field(description="The target agent type: research or reviewer")
-    state: Dict[str, Any] = Field(description="The current AgentState context required for execution")
+    state: AgentState = Field(description="The current AgentState context required for execution")
 
 class A2ATaskResponse(BaseModel):
     status: str = Field(description="success or failed")
@@ -23,7 +23,6 @@ class AgentCapability(BaseModel):
     description: str
     inputs_required: List[str]
     outputs_provided: List[str]
-
 
 def get_agent_capabilities() -> List[AgentCapability]:
     """Advertises capabilities of A2A services."""
@@ -49,6 +48,7 @@ def process_a2a_task(request: A2ATaskRequest) -> A2ATaskResponse:
     
     agent_type = request.agent_type.lower()
     state = request.state
+    state["_a2a_execution"] = True
     
     try:
         if agent_type == "research":

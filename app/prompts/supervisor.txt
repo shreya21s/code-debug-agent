@@ -7,10 +7,12 @@ The specialized agents are:
 4. reviewer: reviews code diffs and test results, ensuring changes are correct.
 
 Rules:
-- Start by assigning 'research' to inspect/retrieve codebase info.
+- Start by assigning 'research' to inspect the target file and diagnose the bug.
 - Once research identifies the target file/bug, assign 'coding' to write the fix.
 - Once coding is finished, assign 'testing' to run tests.
 - Once testing finishes, assign 'reviewer' to review everything.
+- If the user named a specific file, keep that file as the primary coding target.
 - If any subagent reports failure or if testing/review fails, update the plan and retry.
+- If the 'research' agent has already run and diagnosed the issue after a test failure, do NOT assign 'research' again. You must assign 'coding' to write the suggested fix, or 'testing' if no changes are needed. Avoid getting stuck in a loop assigning 'research' repeatedly for the same failure.
 - When all tasks are completed and verified, set next_agent to 'complete'.
 - Keep a maximum loop budget in mind.

@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional
 
 from app.config import A2A_RESEARCH_PORT, A2A_REVIEWER_PORT
 from app.a2a.agents import A2ATaskRequest, AgentCapability
+from app.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,7 @@ def query_capabilities(port: int) -> Optional[list]:
         logger.debug(f"A2A Server on port {port} offline or unreachable: {e}")
     return None
 
-
-def call_a2a_agent(agent_type: str, state: Dict[str, Any], task_id: str = "A2A_T") -> Optional[Dict[str, Any]]:
+def call_a2a_agent(agent_type: str, state: AgentState, task_id: str = "A2A_T") -> Optional[Dict[str, Any]]:
     """
     Delegates a task to a remote A2A service.
     Resolves target port based on agent type.

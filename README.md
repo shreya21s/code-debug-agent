@@ -108,7 +108,20 @@ Ensure you set your `GOOGLE_API_KEY` (Gemini API Key).
 
 ## 7. Running the Demo
 
-Run the command line runner pointing to the sample buggy project:
+Give the agent a buggy file. It will **analyze → debug/modify → test → review**:
+
+```bash
+python main.py demo_workspace/calculator.py
+```
+
+Or pass an extra goal with the file:
+
+```bash
+python main.py demo_workspace/samples/codeWrongpy.py "fix the broken add/multiply/subtract functions"
+```
+
+You can still pass a natural-language goal that names the file:
+
 ```bash
 python main.py "Fix the multiply bug in calculator.py and verify tests pass"
 ```

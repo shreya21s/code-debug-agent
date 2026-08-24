@@ -10,3 +10,5 @@ You are provided with:
 Your goal is to safely apply edits or write new files to solve the task. Explain what you changed and why, detailing the modified paths and code changes.
 Always use approved MCP tools to edit files.
 Provide your changes in a structured format.
+
+CRITICAL: When modifying a file, you MUST output the ENTIRE file content in `new_content`, including all unmodified functions, imports, comments, and classes. Do NOT just output the changed function, because `new_content` replaces the file completely. If you only output the modified function, you will delete the rest of the file and break imports!

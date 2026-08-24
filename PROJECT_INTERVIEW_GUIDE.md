@@ -10,7 +10,7 @@ This document is a structured guide to help you explain, defend, and discuss thi
 The project is a stateful multi-agent AI system designed to automatically analyze, debug, modify, and review codebase repositories. It orchestrates specialized subagents to locate buggy code using semantic search (RAG), apply bug fixes over standard protocols (MCP), execute test suites securely, and review diffs for regressions.
 
 ### Core Problem
-Developers lose significant time in manual iteration loops: reading code, identifying files, editing code, running test suites, analyzing errors, and reviewing changes. Standard LLM wrappers fail at this because they lack state memory, struggle with context sizes, cannot interact with system files/test runners, and cannot safely review their own work in isolated environments.
+Developers lose significant time in manual iteration loops: reading code, identifying files, editing code, running test suites, analyzing errors, and reviewing changes. Standard LLM wrappers fail at this because they lack state memory, struggle with context sizes, and cannot reliably interact with repository files or test runners. This prototype adds those capabilities, while explicitly acknowledging that host-side test execution is not a security sandbox.
 
 ### Main User Flow
 1. **User Input**: A natural language goal (e.g., *"Fix the multiply bug in calculator.py and verify tests pass"*).
@@ -40,7 +40,7 @@ graph TD
     Coder -->|Call write_file| MCPServer[stdio MCP Server]
     Tester -->|Call run_tests| MCPServer
     
-    Researcher <==>|A2A Protocol / HTTP| Reviewer
+    Researcher <==>|A2A-style HTTP delegation| Reviewer
     
     Researcher -->|Return Findings| Supervisor
     Coder -->|Return Diffs| Supervisor
@@ -73,16 +73,16 @@ graph TD
     *   *Usage*: Custom in-memory and pickle-serialized vector database fallback.
     *   *Reason*: Windows SQLite conflicts frequently cause native C++ binary crashes in Chroma. A custom pure-python fallback using `numpy` cosine similarity calculation guarantees cross-platform execution.
 *   **ChromaDB**
-    *   *Usage*: Standard native vector storage for semantic retrieval on non-Windows platforms.
-    *   *Reason*: Fast vector index query capabilities using cosine distance workspace matching.
+    *   *Usage*: Optional native vector storage when the platform and configuration permit it.
+    *   *Reason*: Provides a standard persistent vector-store implementation; the current default configuration uses the simple backend for portability.
 
 ### Protocols & Frameworks
 *   **Model Context Protocol (MCP)**
     *   *Usage*: Standardized API interface for filesystem read/write and pytest commands.
-    *   *Reason*: Decouples tool execution from agent definitions. Enforces standard input boundaries to prevent shell injections and directory escaping.
+    *   *Reason*: Decouples tool execution from agent definitions. Enforces input boundaries to reduce shell-injection and directory-escape risks; it is a process boundary, not a sandbox.
 *   **FastAPI / HTTP (Agent-to-Agent - A2A)**
-    *   *Usage*: Lightweight remote microservice server allowing independent agents to act as distributed nodes.
-    *   *Reason*: Enables microservice modularity. Agents like `researcher` and `reviewer` can run as separate networked web applications, falling back to local nodes if offline.
+    *   *Usage*: Lightweight remote service interface allowing research and reviewer tasks to execute as networked nodes.
+    *   *Reason*: Enables microservice modularity. The same FastAPI server can be started on different ports for different deployments, and the main graph falls back to local nodes if the service is unavailable.
 
 ---
 
@@ -131,11 +131,11 @@ graph TD
 
 ## 4. Critical Deep Dives
 
-### A2A Remote Service Protocol
+### A2A-Style Remote Service Protocol
 *   **What it does**: Exposes agents as independent services over HTTP endpoints.
-*   **How it works**: The Research and Reviewer agents can run inside separate FastAPI processes (listening on ports `8001` and `8002`). When the main graph executes the local agent nodes, it queries the endpoint `GET /capabilities`. If responsive, the local node wraps `AgentState` in a `A2ATaskRequest` and POSTs it to `POST /execute` to perform remote work. If the endpoint is down, it prints a debug line and executes local functions as fallback.
+*   **How it works**: A FastAPI server exposes `GET /capabilities` and `POST /execute`. By convention, research uses port `8001` and reviewer uses port `8002`; the same server implementation advertises both agent types and can be run on either port. The local node checks capabilities, wraps `AgentState` in an `A2ATaskRequest`, and delegates over HTTP when available. If the endpoint is down or unsupported, it executes the local implementation.
 *   **Why designed this way**: In production, security and hardware constraints dictate that heavy tasks (like GPU-based inference or massive codebase RAG queries) should run on separate machines, away from the lightweight coordinator engine.
-*   **Failure handling**: Complete failover logic: `requests.post()` errors are caught, reverting execution gracefully to local node calculations.
+*   **Failure handling**: Capability checks, HTTP errors, and connection errors return control to the local implementation. This is application-level fallback, not service isolation.
 
 ### SimpleVectorStore: Portable Pure-Python Fallback
 *   **What it does**: Custom database to avoid compiled SQLite/Chroma compilation conflicts.
@@ -143,10 +143,10 @@ graph TD
     $$\text{Similarity} = \frac{\mathbf{q} \cdot \mathbf{i}}{\|\mathbf{q}\| \|\mathbf{i}\|}$$
     It serializes vector records as simple binary dictionaries via python `pickle`. If `os.name == "nt"` (Windows), or if the environment variable `VECTOR_DB_BACKEND` is set to `"simple"`, the system instantiates `SimpleVectorStore` instead of `chromadb.PersistentClient`.
 *   **Why designed this way**: Chroma SQLite configurations trigger process memory access violations on Windows. Designing a NumPy-based fallback guarantees developers can run RAG testing locally without crashes.
-*   **Optimization**: Generates deterministic mock embedding vectors (768 dimensions) by seeding standard MD5 hash seeds to the random generator if the user has not configured `GOOGLE_API_KEY`, allowing completely offline, cost-free regression testing.
+*   **Offline behavior**: Generates deterministic mock embedding vectors (768 dimensions) from MD5-derived seeds when the configured embedding service is unavailable or no Google API key is configured, allowing offline regression testing.
 
 ### Secure Model Context Protocol File/Test Boundary
-*   **What it does**: Enforces isolation on filesystem and command runners.
+*   **What it does**: Enforces workspace boundaries and restricts the command runner; it does not provide OS-level isolation.
 *   **How it works**: 
     1.  *Path Traversal Block*: Every file read/write resolves the requested path against the workspace path:
         ```python
@@ -154,12 +154,12 @@ graph TD
         if not resolved_target.is_relative_to(resolved_root.resolve()):
             raise ValueError("Path traversal detected!")
         ```
-    2.  *No Arbitrary Command Injection*: Instead of exposing a raw shell runner (like `shell=True` subprocesses or the insecure `run_command` in `testing_server.py`), the secure `run_tests` tool strictly constructs execution parameters:
+    2.  *Restricted Test Command*: Instead of exposing a raw shell runner, the `run_tests` tool strictly constructs execution parameters:
         ```python
         cmd = [sys.executable, "-m", "pytest", "-v"]
         ```
         It tokenizes inputs using `shlex.split`, ignores command prefix injections (`pytest` or `python -m`), and validates target file arguments against the path traversal check.
-*   **Why designed this way**: A naive agent can easily run malicious code, write to critical system directories, or execute destructive commands (like `rm -rf /`). Enforcing strict relative boundaries guarantees safety.
+*   **Why designed this way**: A naive agent can easily write outside the repository or request unintended commands. The controls reduce those risks, but they do not make running untrusted test code safe; production use still requires a container or other sandbox.
 
 ---
 
@@ -185,9 +185,9 @@ graph TD
 
 ### D. Failure / Edge-Case Questions
 *   **What happens if the model gets stuck in an infinite loop correcting the same test failure?**
-    *   *Answer*: In [`routing.py`](file:///d:/code-debug-ai-agent/app/graph/routing.py), we check `state.iteration_count` against `MAX_ITERATIONS = 10`. If the loop exceeds 10 iterations, routing bypasses all agents and goes directly to the `final_response` node to terminate, returning the execution steps to the user without wasting tokens.
+    *   *Answer*: In [`routing.py`](file:///d:/code-debug-ai-agent/app/graph/routing.py), routing checks `state.iteration_count` against `MAX_ITERATIONS = 10`. When the limit is reached, routing bypasses the agents and goes directly to `final_response`. The Supervisor also stops after three coding attempts, so there are two independent guards against unbounded correction loops.
 *   **What happens if there are no tests in the target workspace?**
-    *   *Answer*: In [`testing_agent.py`](file:///d:/code-debug-ai-agent/app/agents/testing_agent.py#L141-L144), if the pytest execution output reveals that no tests were collected, the agent automatically marks the outcome as `success = True` and sets the summary to *"No tests found in repository (Auto-passed validation)"*. This prevents the system from getting blocked when debugging workspaces without test suites.
+    *   *Answer*: In [`testing_agent.py`](file:///d:/code-debug-ai-agent/app/agents/testing_agent.py#L149-L250), if pytest reveals that no tests were collected, the agent does *not* blindly mark the task as successful. Instead, the testing agent runs a **syntax validation fallback** (parsing it via Python's AST parser or verifying file readability) to ensure the code is syntactically sound, sets the outcome success status based on the syntax check correctness, and explicitly reports `Automated tests: Not available (No tests found)` alongside validation results.
 
 ### E. Tricky / Twist Questions
 *   **Is this system actually production-secure? If I point this agent to a repository, can it run malicious code?**
@@ -209,8 +209,8 @@ graph TD
 *   **Lack of Isolation**: Subprocess execution runs on the local host machine, locking resources and risking filesystem race conditions.
 
 ### Scaling Scenarios
-*   **10 Users**: Works without issues. High latency (30-40 seconds per run) but no resources are choked.
-*   **1,000 Users**: Will trigger LLM rate limits. Parallel runs will corrupt files since the local `WORKSPACE_ROOT` is hardcoded per configuration.
+*   **10 Users**: The prototype is intended for small-scale local use; latency and shared workspace state become concerns as runs overlap.
+*   **1,000 Users**: Would likely trigger LLM rate limits and cause workspace collisions because each run mutates local filesystem state.
 *   **100,000 Users**: Will crash the server. Local file system collisions, memory starvation due to loaded NumPy arrays, and massive token costs.
 
 ### Production Improvements
@@ -259,7 +259,7 @@ graph TD
 1.  **Cyclic Orchestrator**: LangGraph manages cyclic code-testing-review loops.
 2.  **Shared State**: State is tracked using the central `AgentState` TypedDict.
 3.  **Structured Output**: LLM outputs are validated against Pydantic schemas using `with_structured_output`.
-4.  **A2A Protocol**: Research and Reviewer agents can run as independent web services via FastAPI.
+4.  **A2A-style HTTP delegation**: Research and Reviewer tasks can run through FastAPI services.
 5.  **MCP Interface**: The Coder edits code and the Tester runs pytest via standard stdio MCP channels.
 6.  **Path Traversal Prevention**: Every file tool uses `.resolve()` and `.is_relative_to()` to block directory escapes.
 7.  **Custom Vector Store**: Pure Python/NumPy database serves as a fallback on Windows.
@@ -268,7 +268,8 @@ graph TD
 10. **Loop Protection**: Maximum iterations are capped at 10 to prevent token wasting.
 
 ### 5 Numbers / Facts worth Remembering
-*   **`10`**: Maximum loop iteration threshold (`MAX_ITERATIONS`).
+*   **`10`**: Maximum graph iteration threshold (`MAX_ITERATIONS`).
+*   **`3`**: Maximum coding attempts before the Supervisor terminates with failure.
 *   **`768`**: Size of vector dimensions used by `MockEmbeddings`.
 *   **`8001 / 8002`**: Default ports used by Research and Reviewer FastAPI A2A services.
 *   **`gemini-1.5-flash`**: Default LLM reasoning model.
@@ -286,7 +287,7 @@ graph TD
 2.  **Claiming SQLite is used on Windows**: Explain that you bypass SQLite/Chroma conflicts on Windows using the `SimpleVectorStore` fallback.
 3.  **Claiming LangGraph uses native parallel execution**: Explain that the graph runs nodes sequentially, returning to the Supervisor at each step.
 4.  **Confusing the agent codebase with the target workspace**: Emphasize that the agent runs on its own codebase (inside `app/`), while the code modification tools target a separate directory specified by `WORKSPACE_ROOT` (such as `demo_workspace` or `examples/sample_project`).
-5.  **Saying the agent generates diffs**: Explain that the Coding agent currently does full file overwrites via the `write_file` MCP tool.
+5.  **Saying the agent writes edits via diff patches**: Explain that the Coding agent writes full file overwrites to the disk via the `write_file` MCP tool, but it *generates* unified diff patches programmatically to populate the `code_changes` state variable so that the Reviewer agent can audit the precise edits.
 
 ---
 

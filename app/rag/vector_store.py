@@ -3,7 +3,7 @@ import logging
 import json
 import pickle
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import numpy as np
 
 from app.config import PROJECT_ROOT
@@ -64,8 +64,21 @@ class SimpleVectorStore:
                 self.data.append(record)
         self.save()
 
-    def query(self, query_embedding: List[float], n_results: int = 5) -> List[Dict[str, Any]]:
+    def query(
+        self,
+        query_embedding: Optional[List[float]] = None,
+        n_results: int = 5,
+        query_embeddings: Optional[List[List[float]]] = None
+    ) -> Any:
+        if query_embedding is None:
+            if query_embeddings is not None and len(query_embeddings) > 0:
+                query_embedding = query_embeddings[0]
+            else:
+                raise ValueError("Either query_embedding or query_embeddings must be provided")
+
         if not self.data:
+            if query_embeddings is not None:
+                return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
             return []
             
         q_vec = np.array(query_embedding)
@@ -86,8 +99,18 @@ class SimpleVectorStore:
         # Sort by similarity descending
         scores.sort(key=lambda x: x[0], reverse=True)
         
-        # Format results to match Chroma's return format
         top_k = scores[:n_results]
+        
+        if query_embeddings is not None:
+            # Return Chroma's dict format
+            return {
+                "ids": [[item["id"] for similarity, item in top_k]],
+                "documents": [[item["text"] for similarity, item in top_k]],
+                "metadatas": [[item["metadata"] for similarity, item in top_k]],
+                "distances": [[1.0 - similarity for similarity, item in top_k]]
+            }
+            
+        # Format results to match Chroma's return format
         return [{
             "id": item["id"],
             "text": item["text"],
@@ -118,13 +141,9 @@ class ChromaVectorStore:
             db_file = persist_dir / "vector_records.pkl" if not in_memory else Path(":memory:")
             # For in-memory fallback, write to a temp file path or just mock in memory
             if in_memory:
-                # Mock in-memory using an empty persistent file that is never saved to disk
-                db_file = Path(os.getenv("TEMP", ".")) / "temp_in_memory_vectors.pkl"
-                if db_file.exists():
-                    try:
-                        db_file.unlink()
-                    except:
-                        pass
+                import tempfile
+                import uuid
+                db_file = Path(tempfile.gettempdir()) / f"temp_in_memory_vectors_{uuid.uuid4().hex}.pkl"
             self.backend = SimpleVectorStore(persist_path=db_file)
             self.is_fallback = True
         else:

@@ -22,6 +22,8 @@ class TestResult(BaseModel):
 
 
 def get_llm():
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return None
     if not GOOGLE_API_KEY:
         return None
     try:
@@ -95,6 +97,32 @@ def run_tests_subprocess(repo_path: str) -> TestResult:
         )
 
 
+import ast
+
+def validate_file_syntax(file_path: Path) -> tuple[bool, str]:
+    """Performs syntax validation on a file depending on its extension."""
+    if not file_path.exists():
+        return False, f"File '{file_path.name}' does not exist for syntax checking."
+    
+    ext = file_path.suffix.lower()
+    if ext == ".py":
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            ast.parse(content)
+            return True, "Python Syntax Check: PASSED (AST parsed successfully)"
+        except SyntaxError as e:
+            return False, f"Python Syntax Error: {e.msg} at line {e.lineno}, col {e.offset}"
+        except Exception as e:
+            return False, f"Failed to parse python file: {e}"
+            
+    # For non-python files, just verify readability
+    try:
+        file_path.read_text(encoding="utf-8", errors="ignore")
+        return True, "File readable validation: PASSED"
+    except Exception as e:
+        return False, f"File readable validation failed: {e}"
+
+
 def testing_node(state: AgentState) -> dict:
     """
     Testing Agent Node: Triggers the test execution in the workspace.
@@ -103,12 +131,22 @@ def testing_node(state: AgentState) -> dict:
     
     repo_path = state.get("repository_path", WORKSPACE_ROOT)
     os.environ["WORKSPACE_ROOT"] = str(Path(repo_path).resolve())
-    
+
+    command_arg = ""
+    target_file = state.get("target_file")
+    if target_file:
+        stem = Path(target_file).stem
+        repo_root = Path(repo_path)
+        for candidate in (f"test_{stem}.py", f"{stem}_test.py"):
+            if (repo_root / candidate).exists():
+                command_arg = candidate
+                break
+
     try:
         from app.mcp.client import call_mcp_tool
         import json
         logger.info("Executing run_tests via MCP client.")
-        mcp_res = call_mcp_tool("run_tests", {"command_arg": ""})
+        mcp_res = call_mcp_tool("run_tests", {"command_arg": command_arg})
         
         # Parse output from tool JSON-serialization
         from mcp.types import TextContent
@@ -121,7 +159,7 @@ def testing_node(state: AgentState) -> dict:
         stdout_log = mcp_res_dict["stdout"]
         summary = "Passed all tests" if success else "Some tests failed"
         if "collected" in stdout_log:
-            summary_lines = [line for line in stdout_log.split("\n") if "passed" in line or "failed" in line or "failed in" in line]
+            summary_lines = [line for line in stdout_log.split("\n") if "passed" in line or "failed in" in line]
             if summary_lines:
                 summary = summary_lines[-1].strip()
                 
@@ -137,11 +175,31 @@ def testing_node(state: AgentState) -> dict:
         test_outcome = run_tests_subprocess(repo_path)
     
     # If the workspace contains no tests or pytest returns error code 4 (no tests collected),
-    # let's check if we should format a success fallback for dummy runs
-    if "no tests ran" in test_outcome.stderr.lower() or "error running pytest" in test_outcome.summary.lower():
-        logger.warning("No tests collected. Returning success mock verify.")
-        test_outcome.success = True
-        test_outcome.summary = "No tests found in repository (Auto-passed validation)"
+    # run syntax check validation instead of falsely marking "passed".
+    no_tests_collected = (
+        "no tests ran" in test_outcome.stderr.lower() or 
+        "no tests ran" in test_outcome.stdout.lower() or
+        "error running pytest" in test_outcome.summary.lower() or
+        "no tests found" in test_outcome.summary.lower() or
+        "collected 0 items" in test_outcome.stdout or
+        "collected 0 items" in test_outcome.stderr
+    )
+    
+    if no_tests_collected:
+        logger.warning("No tests collected. Running syntax validation as fallback.")
+        success = False
+        val_summary = ""
+        if target_file:
+            safe_target = Path(repo_path) / target_file
+            syntax_ok, syntax_msg = validate_file_syntax(safe_target)
+            success = syntax_ok
+            val_summary = syntax_msg
+        else:
+            success = True
+            val_summary = "No target file specified to validate."
+            
+        test_outcome.success = success
+        test_outcome.summary = f"Automated tests: Not available (No tests found)\nValidation: {val_summary}"
         
     logger.info(f"[Test Execution Result] Success: {test_outcome.success} | Summary: {test_outcome.summary}")
     
@@ -155,12 +213,13 @@ def testing_node(state: AgentState) -> dict:
     if current_task_id and current_task_id not in completed:
         completed.append(current_task_id)
         
-    # Format test summary
+    # Format test summary (keep up to 3000 chars of stdout/stderr)
     summary_str = (
         f"Test Success: {test_outcome.success}\n"
         f"Command: {test_outcome.command}\n"
         f"Summary: {test_outcome.summary}\n"
-        f"Log Snippet: {test_outcome.stdout[-400:] if len(test_outcome.stdout) > 400 else test_outcome.stdout}"
+        f"Log Snippet:\n{test_outcome.stdout[-3000:] if len(test_outcome.stdout) > 3000 else test_outcome.stdout}\n"
+        f"Error Snippet:\n{test_outcome.stderr[-3000:] if len(test_outcome.stderr) > 3000 else test_outcome.stderr}"
     )
     
     return {
@@ -169,3 +228,4 @@ def testing_node(state: AgentState) -> dict:
         "messages": [{"role": "tester", "content": summary_str}],
         "next_agent": "supervisor"
     }
+

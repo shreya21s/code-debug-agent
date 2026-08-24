@@ -84,3 +84,86 @@ def test_end_to_end_flow(tmp_path):
             os.environ.pop("WORKSPACE_ROOT", None)
         import app.mcp.tools as tools
         tools.WORKSPACE_ROOT = Path(original_root) if original_root else repo.parent
+
+
+def test_end_to_end_self_correction_loop(tmp_path):
+    """
+    Verifies that the graph loops back and self-corrects when the first fix fails tests.
+    """
+    repo = tmp_path / "sandbox_project"
+    repo.mkdir()
+    
+    (repo / "calculator.py").write_text(
+        "def multiply(a, b):\n"
+        "    return a + b\n",
+        encoding="utf-8"
+    )
+    (repo / "test_calculator.py").write_text(
+        "from calculator import multiply\n"
+        "def test_multiply():\n"
+        "    assert multiply(3, 4) == 12\n",
+        encoding="utf-8"
+    )
+    
+    original_root = os.getenv("WORKSPACE_ROOT")
+    
+    # Custom Mock LLM that returns a bad change on first invocation, and a good one on second
+    from app.agents import coding_agent
+    from app.agents.coding_agent import CodeChange
+    from langchain_core.runnables import Runnable
+    
+    class SequenceMockLLM(Runnable):
+        def __init__(self):
+            self.calls = 0
+        def invoke(self, input, config=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                # Buggy first fix: uses subtraction
+                return CodeChange(
+                    reasoning="First bad fix using minus",
+                    file_path="calculator.py",
+                    new_content="def multiply(a, b):\n    return a - b\n"
+                )
+            else:
+                # Correct second fix: uses multiplication
+                return CodeChange(
+                    reasoning="Second correct fix using multiplication",
+                    file_path="calculator.py",
+                    new_content="def multiply(a, b):\n    return a * b\n"
+                )
+                
+    original_get_llm = coding_agent.get_llm
+    mock_llm = SequenceMockLLM()
+    coding_agent.get_llm = lambda: mock_llm
+    
+    try:
+        os.environ["WORKSPACE_ROOT"] = str(repo)
+        import app.mcp.tools as tools
+        tools.WORKSPACE_ROOT = repo
+        
+        graph = create_graph()
+        initial_state = create_initial_state(
+            "Fix the multiply bug in calculator.py",
+            str(repo)
+        )
+        
+        result = graph.invoke(initial_state)
+        
+        # Verify it went through self-correction and succeeded
+        assert result["iteration_count"] > 2
+        assert result["next_agent"] == "complete"
+        assert result["task_success"] is True
+        
+        # Check that the final content is correct
+        fixed_code = (repo / "calculator.py").read_text()
+        assert "a * b" in fixed_code
+        
+    finally:
+        coding_agent.get_llm = original_get_llm
+        if original_root:
+            os.environ["WORKSPACE_ROOT"] = original_root
+        else:
+            os.environ.pop("WORKSPACE_ROOT", None)
+        import app.mcp.tools as tools
+        tools.WORKSPACE_ROOT = Path(original_root) if original_root else repo.parent
+

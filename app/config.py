@@ -17,9 +17,14 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 # Model configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-1.5-flash")
 
+# Local LLM configuration
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
 # Workspace root configuration for MCP filesystem restriction
 # Resolve relative paths relative to the project root directory
-workspace_env = os.getenv("WORKSPACE_ROOT", "./examples/sample_project")
+workspace_env = os.getenv("WORKSPACE_ROOT", "./demo_workspace")
 WORKSPACE_ROOT = Path(workspace_env).resolve() if Path(workspace_env).is_absolute() else (PROJECT_ROOT / workspace_env).resolve()
 
 # A2A and MCP service configurations
